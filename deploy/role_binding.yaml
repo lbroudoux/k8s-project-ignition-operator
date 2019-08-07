@@ -1,0 +1,12 @@
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: project-igniter-operator
+subjects:
+- kind: ServiceAccount
+  name: project-igniter-operator
+  namespace: project-ignition
+roleRef:
+  kind: ClusterRole
+  name: project-igniter-operator
+  apiGroup: rbac.authorization.k8s.io

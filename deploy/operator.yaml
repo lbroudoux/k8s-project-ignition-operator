@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: project-igniter-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: project-igniter-operator
+  template:
+    metadata:
+      labels:
+        name: project-igniter-operator
+    spec:
+      serviceAccountName: project-igniter-operator
+      containers:
+        - name: project-igniter-operator
+          # Replace this with the built image name
+          image: quay.io/lbroudoux/project-igniter-operator
+          command:
+          - project-igniter-operator
+          imagePullPolicy: Always
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "project-igniter-operator"

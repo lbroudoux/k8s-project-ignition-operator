@@ -1,0 +1,65 @@
+apiVersion: lbroudoux.github.io/v1beta1
+kind: ProjectIgnition
+metadata:
+  name: example-projectignition
+spec:
+  # Add fields here
+  projectName: example
+  namespaces:
+    lifecycle:
+      - dev
+      - qa
+      - prod
+    useOpenShiftProject: true
+    addStageNumber: false
+    addStageNameInDisplayName: true
+    definitions:
+      - name: dev
+        annotations:
+          - 'project: {project}'
+          - 'github.io/my-annotation: my-annotation-value'
+        labels:
+          - key: stage
+            value: development
+        finalizers:
+          - custom
+        roles:
+          - role: edit
+            user: system:serviceaccount:fabric:jenkins
+          - role: system:image-puller
+            group: system:serviceaccounts:{project}-qa
+          - role: system:image-puller
+            group: system:serviceaccounts:{project}-prod
+        quotas:
+          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-small.yml'
+      - name: qa
+        annotations:
+          - 'project: {project}'
+          - 'github.io/my-annotation: my-annotation-value-qa'
+        labels:
+          - key: stage
+            value: quality
+        finalizers:
+          - custom
+        roles:
+          - role: edit
+            user: system:serviceaccount:fabric:jenkins
+        quotas:
+          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-medium.yml'
+      - name: prod
+        annotations:
+          - 'project={project}'
+          - 'github.io/my-annotation: my-annotation-value-prod'
+        labels:
+          - key: stage
+            value: production
+        finalizers:
+          - custom
+        roles:
+          - role: edit
+            user: system:serviceaccount:fabric:jenkins
+        quotas:
+          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-large.yml'
+    openShiftMultiProjectQuota:
+      projectAnnotationSelector: 'project: {project}'
+      projectLabelSelector: null
