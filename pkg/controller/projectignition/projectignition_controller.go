@@ -3,11 +3,12 @@ package projectignition
 import (
 	"context"
 	"errors"
-	"strings"
+	strings "strings"
 
 	lbroudouxv1beta1 "github.com/lbroudoux/project-igniter-operator/pkg/apis/lbroudoux/v1beta1"
 	"github.com/redhat-cop/operator-utils/pkg/util"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -203,8 +205,8 @@ func (r *ReconcileProjectIgnition) manageCleanUpLogic(cr *lbroudouxv1beta1.Proje
 
 func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.ProjectIgnition) error {
 
-	for index := 0; index < len(cr.Spec.Namespaces.Definitions); index++ {
-		var namespaceName = (cr.Spec.ProjectName + "-" + cr.Spec.Namespaces.Definitions[index].Name)
+	for i := 0; i < len(cr.Spec.Namespaces.Definitions); i++ {
+		var namespaceName = (cr.Spec.ProjectName + "-" + cr.Spec.Namespaces.Definitions[i].Name)
 
 		// Check namespace already exist using a base v1 client.
 		v1client, err := kubernetes.NewForConfig(r.restConfig)
@@ -214,9 +216,38 @@ func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.Proj
 		namespace, err := v1client.CoreV1().Namespaces().Get(namespaceName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			log.Info("Namespace does not exists, creating it...")
-			namespace = createNewNamespaceFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[index])
-			v1client.CoreV1().Namespaces().Create(namespace)
+			namespace = createNewNamespaceFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i])
+			namespace, err = v1client.CoreV1().Namespaces().Create(namespace)
+			if err != nil {
+				log.Error(err, "Failed to create a Namespace")
+				return err
+			}
 
+			// Set ownership of namespace to this CR
+			if err := controllerutil.SetControllerReference(cr, namespace, r.scheme); err != nil {
+				return err
+			}
+
+			if cr.Spec.Namespaces.Definitions[i].Roles != nil {
+				log.Info("Now dealing with roles...")
+				for j := 0; j < len(cr.Spec.Namespaces.Definitions[i].Roles); j++ {
+					role := createRoleBindingFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i], &cr.Spec.Namespaces.Definitions[i].Roles[j])
+					err = r.client.Create(context.TODO(), role)
+					if err != nil {
+						log.Error(err, "Failed to create a RoleBinding")
+						return err
+					}
+
+					// Set ownership of RoleBinding to this CR
+					if err := controllerutil.SetControllerReference(cr, role, r.scheme); err != nil {
+						return err
+					}
+				}
+			}
+
+			if cr.Spec.Namespaces.Definitions[i].Quotas != nil {
+				log.Info("Now dealing with quotas...")
+			}
 		} else {
 			log.Info("Namespace " + namespace.Name + " already exists")
 		}
@@ -229,12 +260,13 @@ func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.Proj
 }
 
 func createNewNamespaceFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec) *corev1.Namespace {
+	namespaceName := spec.ProjectName + "-" + def.Name
 	// Create annotations if specified.
 	annotations := map[string]string{}
 	if def.Annotations != nil {
 		for i := 0; i < len(def.Annotations); i++ {
 			split := strings.Split(def.Annotations[i], ": ")
-			annotations[split[0]] = split[1]
+			annotations[split[0]] = replaceProjectOrNamespaceInString(spec.ProjectName, namespaceName, split[1])
 		}
 	}
 	// Create labels if specified.
@@ -246,10 +278,63 @@ func createNewNamespaceFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec
 	}
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        spec.ProjectName + "-" + def.Name,
+			Name:        namespaceName,
 			Labels:      labels,
 			Annotations: annotations,
 		},
 		Spec: corev1.NamespaceSpec{},
 	}
+}
+
+func createRoleBindingFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec, roleSpec *lbroudouxv1beta1.RoleSpec) *rbacv1.RoleBinding {
+	namespaceName := spec.ProjectName + "-" + def.Name
+	if roleSpec.User != "" {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      roleSpec.Role + "_" + replaceProjectOrNamespaceInString(spec.ProjectName, namespaceName, roleSpec.User),
+				Namespace: namespaceName,
+			},
+			RoleRef: rbacv1.RoleRef{
+				Kind:     "Role",
+				Name:     roleSpec.Role,
+				APIGroup: "rbac.authorization.k8s.io",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:     "User",
+					Name:     replaceProjectOrNamespaceInString(spec.ProjectName, namespaceName, roleSpec.User),
+					APIGroup: "rbac.authorization.k8s.io",
+				},
+			},
+		}
+	} else {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      roleSpec.Role + "_" + replaceProjectOrNamespaceInString(spec.ProjectName, namespaceName, roleSpec.Group),
+				Namespace: namespaceName,
+			},
+			RoleRef: rbacv1.RoleRef{
+				Kind:     "Role",
+				Name:     roleSpec.Role,
+				APIGroup: "rbac.authorization.k8s.io",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:     "Group",
+					Name:     replaceProjectOrNamespaceInString(spec.ProjectName, namespaceName, roleSpec.Group),
+					APIGroup: "rbac.authorization.k8s.io",
+				},
+			},
+		}
+	}
+}
+
+func replaceProjectOrNamespaceInString(projectName string, namespaceName string, stringToReplace string) string {
+	if strings.Contains(stringToReplace, "{project}") {
+		stringToReplace = strings.Replace(stringToReplace, "{project}", projectName, -1)
+	}
+	if strings.Contains(stringToReplace, "{namespace}") {
+		stringToReplace = strings.Replace(stringToReplace, "{namespace}", namespaceName, -1)
+	}
+	return stringToReplace
 }

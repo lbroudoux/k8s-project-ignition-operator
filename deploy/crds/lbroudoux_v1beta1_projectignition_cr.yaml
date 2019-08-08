@@ -48,7 +48,7 @@ spec:
           - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-medium.yml'
       - name: prod
         annotations:
-          - 'project={project}'
+          - 'project: {project}'
           - 'github.io/my-annotation: my-annotation-value-prod'
         labels:
           - key: stage
