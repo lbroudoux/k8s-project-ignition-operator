@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Template
+labels:
+  template: projectignition-sample
+metadata:
+  name: projectignition-sample
+  annotations:
+    description: This template ignites a complex projecty configuration, creating multiple namespaces and adding required annotations, labels and quotas
+    iconClass: fa fa-fire
+parameters:
+- description: The name for the project
+  name: PROJECT_NAME
+  required: true
+  value: example
+objects:
+- apiVersion: lbroudoux.github.io/v1beta1
+  kind: ProjectIgnition
+  metadata:
+    name: ${PROJECT_NAME}-projectignition
+  spec:
+    projectName: ${PROJECT_NAME}
+    namespaces:
+      useOpenShiftProject: true
+      addStageNumber: false
+      addStageNameInDisplayName: true
+      definitions:
+        - name: dev
+          annotations:
+            - 'project: {project}'
+            - 'github.io/my-annotation: my-annotation-value'
+          labels:
+            - key: stage
+              value: development
+          finalizers:
+            - custom
+          roleBindings:
+            - role: edit
+              user: system:serviceaccount:fabric:jenkins
+            - role: system:image-puller
+              group: system:serviceaccounts:{project}-qa
+            - role: system:image-puller
+              group: system:serviceaccounts:{project}-prod
+          quotas:
+            - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-small.yml'
+        - name: qa
+          annotations:
+            - 'project: {project}'
+            - 'github.io/my-annotation: my-annotation-value-qa'
+          labels:
+            - key: stage
+              value: quality
+          finalizers:
+            - custom
+          roleBindings:
+            - role: edit
+              user: system:serviceaccount:fabric:jenkins
+          quotas:
+            - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-medium.yml'
+        - name: prod
+          annotations:
+            - 'project: {project}'
+            - 'github.io/my-annotation: my-annotation-value-prod'
+          labels:
+            - key: stage
+              value: production
+          finalizers:
+            - custom
+          roleBindings:
+            - role: edit
+              user: system:serviceaccount:fabric:jenkins
+          quotas:
+            - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-large.yml'
+    openShiftMultiProjectQuota:
+      projectAnnotationSelector: 'project: {project}'
+      projectLabelSelector: null
+      quota: 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/cluster-quota.yml'
