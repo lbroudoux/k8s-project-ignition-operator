@@ -5,7 +5,7 @@ labels:
 metadata:
   name: projectignition-sample
   annotations:
-    description: This template ignites a complex projecty configuration, creating multiple namespaces and adding required annotations, labels and quotas
+    description: This template ignites a complex project configuration, creating multiple namespaces and adding required annotations, labels and quotas
     iconClass: fa fa-fire
 parameters:
 - description: The name for the project
