@@ -2,6 +2,9 @@ module github.com/lbroudoux/project-igniter-operator
 
 require (
 	github.com/NYTimes/gziphandler v1.0.1 // indirect
+	github.com/ghodss/yaml v1.0.0
+	github.com/openshift/api v3.9.0+incompatible
+	github.com/openshift/client-go v3.9.0+incompatible
 	github.com/operator-framework/operator-sdk v0.9.1-0.20190806200632-6c7039c37324
 	github.com/redhat-cop/operator-utils v0.0.0-20190530184149-66ee667a40b2
 	github.com/spf13/pflag v1.0.3

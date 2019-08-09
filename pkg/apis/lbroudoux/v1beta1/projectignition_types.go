@@ -12,8 +12,9 @@ import (
 // +k8s:openapi-gen=true
 type ProjectIgnitionSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	ProjectName string         `json:"projectName"`
-	Namespaces  NamespacesSpec `json:"namespaces"`
+	ProjectName                string                `json:"projectName"`
+	Namespaces                 NamespacesSpec        `json:"namespaces"`
+	OpenShiftMultiProjectQuota MultiProjectQuotaSpec `json:"openShiftMultiProjectQuota,omitempty"`
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
 }
@@ -21,25 +22,22 @@ type ProjectIgnitionSpec struct {
 // NamespacesSpec defines the desired state of Namespaces
 // +k8s:openapi-gen=true
 type NamespacesSpec struct {
+	UseOpenShiftProject       bool `json:"useOpenShiftProject"`
+	AddStageNumber            bool `json:"addStageNumber"`
+	AddStageNameInDisplayName bool `json:"addStageNameInDisplayName"`
 	// +kubebuilder:validation:MinItems=1
-	Lifecycle                 []string `json:"lifecycle"`
-	UseOpenShiftProject       bool     `json:"useOpenShiftProject"`
-	AddStageNumber            bool     `json:"addStageNumber"`
-	AddStageNameInDisplayName bool     `json:"addStageNameInDisplayName"`
-	// +kubebuilder:validation:MinItems=1
-	Definitions                []DefinitionSpec      `json:"definitions"`
-	OpenShiftMultiProjectQuota MultiProjectQuotaSpec `json:"openShiftMultiProjectQuota"`
+	Definitions []DefinitionSpec `json:"definitions"`
 }
 
 // DefinitionSpec defines the desired state of Definitions
 // +k8s:openapi-gen=true
 type DefinitionSpec struct {
-	Name        string      `json:"name"`
-	Annotations []string    `json:"annotations,omitempty"`
-	Labels      []LabelSpec `json:"labels,omitempty"`
-	Finalizers  []string    `json:"finalizers,omitempty"`
-	Roles       []RoleSpec  `json:"roles,omitempty"`
-	Quotas      []string    `json:"quotas,omitempty"`
+	Name         string            `json:"name"`
+	Annotations  []string          `json:"annotations,omitempty"`
+	Labels       []LabelSpec       `json:"labels,omitempty"`
+	Finalizers   []string          `json:"finalizers,omitempty"`
+	RoleBindings []RoleBindingSpec `json:"roleBindings,omitempty"`
+	Quotas       []string          `json:"quotas,omitempty"`
 }
 
 // LabelSpec defines the desired state of Labels
@@ -49,9 +47,9 @@ type LabelSpec struct {
 	Value string `json:"value"`
 }
 
-// RoleSpec defines the desired state of Roles
+// RoleBindingSpec defines the desired state of Roles
 // +k8s:openapi-gen=true
-type RoleSpec struct {
+type RoleBindingSpec struct {
 	Role  string `json:"role"`
 	User  string `json:"user,omitempty"`
 	Group string `json:"group,omitempty"`
@@ -62,6 +60,7 @@ type RoleSpec struct {
 type MultiProjectQuotaSpec struct {
 	ProjectAnnotationSelector string `json:"projectAnnotationSelector"`
 	ProjectLabelSelector      string `json:"projectLabelSelector"`
+	Quota                     string `json:"quota"`
 }
 
 // ProjectIgnitionStatus defines the observed state of ProjectIgnition

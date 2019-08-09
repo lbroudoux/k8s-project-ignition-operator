@@ -11,6 +11,8 @@ rules:
   - pods
   - services
   - endpoints
+  - resourcequotas
+  - limitranges
   - persistentvolumeclaims
   - events
   - configmaps
@@ -42,6 +44,14 @@ rules:
   - quota.openshift.io
   resources:
   - projects
+  - clusterresourcequotas
+  verbs:
+  - list
+- apiGroups:
+  - quota.openshift.io
+  resources:
+  - projects
+  - clusterresourcequotas
   verbs:
   - '*'
 - apiGroups:

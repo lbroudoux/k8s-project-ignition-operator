@@ -2,10 +2,17 @@ package projectignition
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io/ioutil"
+	"net/http"
+	"regexp"
 	strings "strings"
 
+	yaml "github.com/ghodss/yaml"
 	lbroudouxv1beta1 "github.com/lbroudoux/project-igniter-operator/pkg/apis/lbroudoux/v1beta1"
+	quotav1 "github.com/openshift/api/quota/v1"
+	crqcliv1 "github.com/openshift/client-go/quota/clientset/versioned/typed/quota/v1"
 	"github.com/redhat-cop/operator-utils/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -13,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -152,38 +160,14 @@ func (r *ReconcileProjectIgnition) Reconcile(request reconcile.Request) (reconci
 	}
 
 	// Manage Operator logic.
-	err = r.manageOperatorLogic(instance)
-	if err != nil {
-		return r.ManageError(instance, err)
+	somethingToDo, err := r.manageOperatorLogic(instance)
+	if somethingToDo {
+		if err != nil {
+			return r.ManageError(instance, err)
+		}
+		return r.ManageSuccess(instance)
 	}
-	return r.ManageSuccess(instance)
-
-	/*
-		// Set ProjectIgnition instance as the owner and controller
-		if err := controllerutil.SetControllerReference(cr, namespace, r.scheme); err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Check if this Pod already exists
-		found := &corev1.Pod{}
-		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-		if err != nil && apierrors.IsNotFound(err) {
-			reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-			err = r.client.Create(context.TODO(), pod)
-			if err != nil {
-				return reconcile.Result{}, err
-			}
-
-			// Pod created successfully - don't requeue
-			return reconcile.Result{}, nil
-		} else if err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Pod already exists - don't requeue
-		reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
-		return reconcile.Result{}, nil
-	*/
+	return reconcile.Result{}, nil
 }
 
 // IsValid returns true if CR is semantically correct
@@ -193,18 +177,41 @@ func (r *ReconcileProjectIgnition) IsValid(obj metav1.Object) (bool, error) {
 	if !ok {
 		return false, errors.New("Not a ProjectIgnition object")
 	}
-	if len(cr.Spec.Namespaces.Lifecycle) == len(cr.Spec.Namespaces.Definitions) {
+	if len(cr.Spec.Namespaces.Definitions) > 0 {
 		return true, nil
 	}
-	return false, errors.New("Not valid because lifecycles and defitions number does not match")
+	return false, errors.New("Not valid because no namespaces definitions")
 }
 
 func (r *ReconcileProjectIgnition) manageCleanUpLogic(cr *lbroudouxv1beta1.ProjectIgnition) error {
 	return nil
 }
 
-func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.ProjectIgnition) error {
+func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.ProjectIgnition) (bool, error) {
+	// First keep trace of changes and check if we're on OpenShift of Vanilla Kubernetes.
+	isOpenShift := false
+	somethingToDo := false
 
+	// The discovery package is used to discover APIs supported by a Kubernetes API server.
+	dclient, err := r.GetDiscoveryClient()
+	if err == nil && dclient != nil {
+		apiGroupList, err := dclient.ServerGroups()
+		if err != nil {
+			log.Info("Error while querying ServerGroups, assuming we're on Vanilla Kubernetes")
+		} else {
+			for i := 0; i < len(apiGroupList.Groups); i++ {
+				if strings.HasSuffix(apiGroupList.Groups[i].Name, ".openshift.io") {
+					isOpenShift = true
+					log.Info("We detected being on OpenShift! Wouhou!")
+					break
+				}
+			}
+		}
+	} else {
+		log.Info("Cannot retrieve a DiscoveryClient, assuming we're on Vanilla Kubernetes")
+	}
+
+	// Check each and every namespace definition.
 	for i := 0; i < len(cr.Spec.Namespaces.Definitions); i++ {
 		var namespaceName = (cr.Spec.ProjectName + "-" + cr.Spec.Namespaces.Definitions[i].Name)
 
@@ -215,48 +222,94 @@ func (r *ReconcileProjectIgnition) manageOperatorLogic(cr *lbroudouxv1beta1.Proj
 		}
 		namespace, err := v1client.CoreV1().Namespaces().Get(namespaceName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
-			log.Info("Namespace does not exists, creating it...")
+			log.Info("Namespace " + namespaceName + " does not exists, creating it")
+			somethingToDo = true
 			namespace = createNewNamespaceFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i])
 			namespace, err = v1client.CoreV1().Namespaces().Create(namespace)
 			if err != nil {
 				log.Error(err, "Failed to create a Namespace")
-				return err
+				return somethingToDo, err
 			}
-
 			// Set ownership of namespace to this CR
 			if err := controllerutil.SetControllerReference(cr, namespace, r.scheme); err != nil {
-				return err
+				return somethingToDo, err
 			}
+			_ = append(cr.Status.Namespaces, namespace.Name)
 
-			if cr.Spec.Namespaces.Definitions[i].Roles != nil {
-				log.Info("Now dealing with roles...")
-				for j := 0; j < len(cr.Spec.Namespaces.Definitions[i].Roles); j++ {
-					role := createRoleBindingFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i], &cr.Spec.Namespaces.Definitions[i].Roles[j])
-					err = r.client.Create(context.TODO(), role)
+			// Deal with namespace role bindings.
+			if cr.Spec.Namespaces.Definitions[i].RoleBindings != nil {
+				log.Info("Now dealing with roles in " + namespaceName)
+				for j := 0; j < len(cr.Spec.Namespaces.Definitions[i].RoleBindings); j++ {
+					roleBinding := createRoleBindingFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i], &cr.Spec.Namespaces.Definitions[i].RoleBindings[j])
+					err = r.client.Create(context.TODO(), roleBinding)
 					if err != nil {
-						log.Error(err, "Failed to create a RoleBinding")
-						return err
+						log.Error(err, "Failed to create a RoleBinding in "+namespaceName)
+						return somethingToDo, err
 					}
 
 					// Set ownership of RoleBinding to this CR
-					if err := controllerutil.SetControllerReference(cr, role, r.scheme); err != nil {
-						return err
+					if err := controllerutil.SetControllerReference(cr, roleBinding, r.scheme); err != nil {
+						return somethingToDo, err
 					}
+					_ = append(cr.Status.RoleBindings, roleBinding.Name)
 				}
 			}
 
+			// Deal with namespace resource quotas.
 			if cr.Spec.Namespaces.Definitions[i].Quotas != nil {
-				log.Info("Now dealing with quotas...")
+				log.Info("Now dealing with quotas in " + namespaceName)
+				for j := 0; j < len(cr.Spec.Namespaces.Definitions[i].Quotas); j++ {
+					quotas, err := createQuotasFromDefinition(&cr.Spec, &cr.Spec.Namespaces.Definitions[i], cr.Spec.Namespaces.Definitions[i].Quotas[j])
+					if err != nil {
+						log.Error(err, "Failed to download quota file "+cr.Spec.Namespaces.Definitions[i].Quotas[j])
+						return somethingToDo, err
+					}
+
+					if quotas != nil {
+						for k := 0; k < len(quotas); k++ {
+							err = r.client.Create(context.TODO(), *quotas[k])
+							if err != nil {
+								log.Error(err, "Failed to create a ResourceQuota or LimitRange in "+namespaceName)
+								return somethingToDo, err
+							}
+						}
+					}
+				}
 			}
 		} else {
 			log.Info("Namespace " + namespace.Name + " already exists")
 		}
 	}
 
-	// The discovery package is used to discover APIs supported by a Kubernetes API server.
-	//r.GetDiscoveryClient()
+	// Now deal with globale cluster resource quota if we're on OpenShift.
+	if cr.Spec.OpenShiftMultiProjectQuota.Quota != "" && isOpenShift {
+		crqclient, err := crqcliv1.NewForConfig(r.restConfig)
+		if err != nil {
+			log.Error(err, "Failed to retrieve a ClusterResourceQuota client")
+			return somethingToDo, err
+		}
 
-	return nil
+		clusterquota, err := crqclient.ClusterResourceQuotas().Get(cr.Spec.ProjectName+"-quota", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			log.Info("ClusterResourceQuota does not exists, creating it")
+			somethingToDo = true
+			clusterquota, err = createClusterResourceQuotaFromSpec(&cr.Spec)
+			if err != nil {
+				log.Error(err, "Failed to prepare ClusterResourceQuota from file "+cr.Spec.OpenShiftMultiProjectQuota.Quota)
+				return somethingToDo, err
+			}
+
+			if clusterquota != nil {
+				clusterquota, err = crqclient.ClusterResourceQuotas().Create(clusterquota)
+				if err != nil {
+					log.Error(err, "Failed to create a ClusterResourceQuota")
+					return somethingToDo, err
+				}
+			}
+		}
+	}
+
+	return somethingToDo, nil
 }
 
 func createNewNamespaceFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec) *corev1.Namespace {
@@ -286,7 +339,7 @@ func createNewNamespaceFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec
 	}
 }
 
-func createRoleBindingFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec, roleSpec *lbroudouxv1beta1.RoleSpec) *rbacv1.RoleBinding {
+func createRoleBindingFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec, roleSpec *lbroudouxv1beta1.RoleBindingSpec) *rbacv1.RoleBinding {
 	namespaceName := spec.ProjectName + "-" + def.Name
 	if roleSpec.User != "" {
 		return &rbacv1.RoleBinding{
@@ -329,6 +382,94 @@ func createRoleBindingFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec,
 	}
 }
 
+func createQuotasFromDefinition(spec *lbroudouxv1beta1.ProjectIgnitionSpec, def *lbroudouxv1beta1.DefinitionSpec, quotaURL string) ([]*runtime.Object, error) {
+	namespaceName := spec.ProjectName + "-" + def.Name
+	if strings.HasPrefix(quotaURL, "http://") || strings.HasPrefix(quotaURL, "https:/") {
+		bytes, err := downloadFile(quotaURL)
+		if err != nil {
+			return nil, err
+		}
+
+		acceptedK8sTypes := regexp.MustCompile(`(ResourceQuota|LimitRange)`)
+		fileAsString := string(bytes[:])
+		sepYamlfiles := strings.Split(fileAsString, "---")
+		retVal := make([]*runtime.Object, 0, len(sepYamlfiles))
+		for _, f := range sepYamlfiles {
+			if f == "\n" || f == "" {
+				// ignore empty cases
+				continue
+			}
+
+			decode := scheme.Codecs.UniversalDeserializer().Decode
+			obj, groupVersionKind, err := decode([]byte(f), nil, nil)
+			if err != nil {
+				log.Error(err, "Error while decoding YAML object")
+				continue
+			}
+
+			if !acceptedK8sTypes.MatchString(groupVersionKind.Kind) {
+				log.Info("The quota file contained K8s object types which are not supported! Skipping object with type: " + groupVersionKind.Kind)
+			} else {
+				switch o := obj.(type) {
+				case *corev1.ResourceQuota:
+					rq := obj.(*corev1.ResourceQuota)
+					rq.Namespace = namespaceName
+					break
+				case *corev1.LimitRange:
+					lr := obj.(*corev1.LimitRange)
+					lr.Namespace = namespaceName
+					break
+				default:
+					_ = o
+				}
+				retVal = append(retVal, &obj)
+			}
+		}
+		return retVal, nil
+	}
+	return nil, nil
+}
+
+func createClusterResourceQuotaFromSpec(spec *lbroudouxv1beta1.ProjectIgnitionSpec) (*quotav1.ClusterResourceQuota, error) {
+	bytes, err := downloadFile(spec.OpenShiftMultiProjectQuota.Quota)
+	if err != nil {
+		log.Error(err, "Error while downloading ClusterResourceQuota template")
+		return nil, err
+	}
+
+	var crq quotav1.ClusterResourceQuota
+	if strings.HasSuffix(spec.OpenShiftMultiProjectQuota.Quota, ".yaml") || strings.HasSuffix(spec.OpenShiftMultiProjectQuota.Quota, ".yml") {
+		err = yaml.Unmarshal(bytes, &crq)
+	} else {
+		err = json.Unmarshal(bytes, &crq)
+	}
+	if err != nil {
+		log.Error(err, "Error while unmarshalling YAML or JSON to ClusterResourceQuota struct")
+		return nil, err
+	}
+
+	// Now set crq properties.
+	crq.SetName(spec.ProjectName + "-quota")
+
+	// Create annotations selector if specified.
+	if spec.OpenShiftMultiProjectQuota.ProjectAnnotationSelector != "" {
+		annotations := map[string]string{}
+		split := strings.Split(spec.OpenShiftMultiProjectQuota.ProjectAnnotationSelector, ": ")
+		annotations[split[0]] = replaceProjectOrNamespaceInString(spec.ProjectName, "", split[1])
+		crq.Spec.Selector.AnnotationSelector = annotations
+	}
+	// Create label seclector if specified.
+	if spec.OpenShiftMultiProjectQuota.ProjectLabelSelector != "" {
+		labels := map[string]string{}
+		split := strings.Split(spec.OpenShiftMultiProjectQuota.ProjectLabelSelector, ": ")
+		labels[split[0]] = replaceProjectOrNamespaceInString(spec.ProjectName, "", split[1])
+		crq.Spec.Selector.LabelSelector = &metav1.LabelSelector{
+			MatchLabels: labels,
+		}
+	}
+	return &crq, nil
+}
+
 func replaceProjectOrNamespaceInString(projectName string, namespaceName string, stringToReplace string) string {
 	if strings.Contains(stringToReplace, "{project}") {
 		stringToReplace = strings.Replace(stringToReplace, "{project}", projectName, -1)
@@ -337,4 +478,14 @@ func replaceProjectOrNamespaceInString(projectName string, namespaceName string,
 		stringToReplace = strings.Replace(stringToReplace, "{namespace}", namespaceName, -1)
 	}
 	return stringToReplace
+}
+
+func downloadFile(url string) ([]byte, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ioutil.ReadAll(resp.Body)
 }

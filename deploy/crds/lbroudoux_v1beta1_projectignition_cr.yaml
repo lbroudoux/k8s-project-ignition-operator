@@ -6,10 +6,6 @@ spec:
   # Add fields here
   projectName: example
   namespaces:
-    lifecycle:
-      - dev
-      - qa
-      - prod
     useOpenShiftProject: true
     addStageNumber: false
     addStageNameInDisplayName: true
@@ -23,7 +19,7 @@ spec:
             value: development
         finalizers:
           - custom
-        roles:
+        roleBindings:
           - role: edit
             user: system:serviceaccount:fabric:jenkins
           - role: system:image-puller
@@ -31,7 +27,7 @@ spec:
           - role: system:image-puller
             group: system:serviceaccounts:{project}-prod
         quotas:
-          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-small.yml'
+          - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-small.yml'
       - name: qa
         annotations:
           - 'project: {project}'
@@ -41,11 +37,11 @@ spec:
             value: quality
         finalizers:
           - custom
-        roles:
+        roleBindings:
           - role: edit
             user: system:serviceaccount:fabric:jenkins
         quotas:
-          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-medium.yml'
+          - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-medium.yml'
       - name: prod
         annotations:
           - 'project: {project}'
@@ -55,11 +51,13 @@ spec:
             value: production
         finalizers:
           - custom
-        roles:
+        roleBindings:
           - role: edit
             user: system:serviceaccount:fabric:jenkins
         quotas:
-          - 'https://raw.githubusercontent.com/redhat-cop/openshift-toolkit/master/quota-management/files/quota-large.yml'
-    openShiftMultiProjectQuota:
-      projectAnnotationSelector: 'project: {project}'
-      projectLabelSelector: null
+          - 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/quota-large.yml'
+  openShiftMultiProjectQuota:
+    projectAnnotationSelector: 'project: {project}'
+    projectLabelSelector: null
+    quota: 'https://raw.githubusercontent.com/lbroudoux/k8s-project-ignition-operator/master/samples/quotas/cluster-quota.yml'
+        
